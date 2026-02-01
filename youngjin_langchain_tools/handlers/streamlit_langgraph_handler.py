@@ -10,6 +10,127 @@ Replaces the deprecated StreamlitCallbackHandler for LangGraph-based agents.
 
 from typing import Any, Dict, List, Optional, Union, Generator
 from dataclasses import dataclass, field
+import logging
+import re
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# Error Patterns for User-Friendly Messages
+# ============================================================
+ERROR_PATTERNS = {
+    # OpenAI errors
+    r"AuthenticationError.*API key": {
+        "title": "🔑 API Key 오류",
+        "message": "API 키가 설정되지 않았거나 유효하지 않습니다.",
+        "solution": [
+            "1. `.env` 파일에 `OPENAI_API_KEY=sk-...` 형태로 키를 설정하세요.",
+            "2. 또는 코드 상단에 직접 API 키를 입력하세요.",
+            "3. API 키는 https://platform.openai.com/api-keys 에서 발급받을 수 있습니다.",
+        ],
+    },
+    r"RateLimitError|rate_limit|429": {
+        "title": "⏱️ Rate Limit 초과",
+        "message": "API 요청 한도를 초과했습니다.",
+        "solution": [
+            "1. 잠시 후 다시 시도해주세요.",
+            "2. API 사용량을 확인하세요: https://platform.openai.com/usage",
+            "3. 필요시 요금제를 업그레이드하세요.",
+        ],
+    },
+    r"InsufficientQuotaError|insufficient_quota|billing": {
+        "title": "💳 크레딧 부족",
+        "message": "API 크레딧이 부족합니다.",
+        "solution": [
+            "1. 결제 정보를 확인하세요: https://platform.openai.com/account/billing",
+            "2. 크레딧을 충전하세요.",
+        ],
+    },
+    r"InvalidRequestError|invalid_request": {
+        "title": "❌ 잘못된 요청",
+        "message": "API 요청 형식이 올바르지 않습니다.",
+        "solution": [
+            "1. 입력 데이터를 확인하세요.",
+            "2. 모델명이 올바른지 확인하세요.",
+        ],
+    },
+    # Anthropic errors
+    r"anthropic.*authentication|ANTHROPIC_API_KEY": {
+        "title": "🔑 Anthropic API Key 오류",
+        "message": "Anthropic API 키가 설정되지 않았거나 유효하지 않습니다.",
+        "solution": [
+            "1. `.env` 파일에 `ANTHROPIC_API_KEY=sk-ant-...` 형태로 키를 설정하세요.",
+            "2. API 키는 https://console.anthropic.com/ 에서 발급받을 수 있습니다.",
+        ],
+    },
+    # Google errors
+    r"google.*api.*key|GOOGLE_API_KEY": {
+        "title": "🔑 Google API Key 오류",
+        "message": "Google API 키가 설정되지 않았거나 유효하지 않습니다.",
+        "solution": [
+            "1. `.env` 파일에 `GOOGLE_API_KEY=...` 형태로 키를 설정하세요.",
+            "2. API 키는 https://aistudio.google.com/apikey 에서 발급받을 수 있습니다.",
+        ],
+    },
+    # Network errors
+    r"ConnectionError|connection.*refused|network": {
+        "title": "🌐 네트워크 오류",
+        "message": "API 서버에 연결할 수 없습니다.",
+        "solution": [
+            "1. 인터넷 연결을 확인하세요.",
+            "2. 방화벽/프록시 설정을 확인하세요.",
+            "3. API 서버 상태를 확인하세요.",
+        ],
+    },
+    r"TimeoutError|timeout|timed out": {
+        "title": "⏰ 시간 초과",
+        "message": "API 요청이 시간 초과되었습니다.",
+        "solution": [
+            "1. 네트워크 연결을 확인하세요.",
+            "2. 잠시 후 다시 시도해주세요.",
+            "3. 요청 크기를 줄여보세요.",
+        ],
+    },
+    # Model errors
+    r"model.*not.*found|does not exist|invalid.*model": {
+        "title": "🤖 모델 오류",
+        "message": "지정된 모델을 찾을 수 없습니다.",
+        "solution": [
+            "1. 모델명이 올바른지 확인하세요.",
+            "2. 해당 모델에 대한 접근 권한이 있는지 확인하세요.",
+            "3. 사용 가능한 모델 목록을 확인하세요.",
+        ],
+    },
+}
+
+
+def _parse_error(error: Exception) -> Dict[str, Any]:
+    """Parse an exception and return user-friendly error information."""
+    error_str = str(error)
+    error_type = type(error).__name__
+    full_error = f"{error_type}: {error_str}"
+
+    # Try to match known error patterns
+    for pattern, info in ERROR_PATTERNS.items():
+        if re.search(pattern, full_error, re.IGNORECASE):
+            return {
+                "matched": True,
+                "title": info["title"],
+                "message": info["message"],
+                "solution": info["solution"],
+                "original_error": error_str[:500],  # Truncate for display
+            }
+
+    # Unknown error - return generic info
+    return {
+        "matched": False,
+        "title": "❗ 오류 발생",
+        "message": f"{error_type}",
+        "solution": ["에러 메시지를 확인하고 문제를 해결해주세요."],
+        "original_error": error_str[:500],
+    }
 
 
 @dataclass
@@ -231,25 +352,63 @@ class StreamlitLanggraphHandler:
             )
             self._response_placeholder = st.empty()
 
-        # Stream from agent
+        # Stream from agent with error handling
         config = config or {}
 
-        for stream_mode, data in agent.stream(
-            input,
-            config=config,
-            stream_mode=["messages", "updates"]
-        ):
-            if stream_mode == "updates":
-                yield from self._handle_updates(data)
-            elif stream_mode == "messages":
-                yield from self._handle_messages(data)
+        try:
+            for stream_mode, data in agent.stream(
+                input,
+                config=config,
+                stream_mode=["messages", "updates"]
+            ):
+                if stream_mode == "updates":
+                    yield from self._handle_updates(data)
+                elif stream_mode == "messages":
+                    yield from self._handle_messages(data)
 
-        # Mark as complete
-        self._status_container.update(
-            label=self._config.complete_label,
-            state="complete",
-            expanded=False
-        )
+            # Mark as complete
+            self._status_container.update(
+                label=self._config.complete_label,
+                state="complete",
+                expanded=False
+            )
+
+        except Exception as e:
+            # Parse error and display user-friendly message
+            error_info = _parse_error(e)
+
+            # Update status to show error
+            self._status_container.update(
+                label="❌ 오류 발생",
+                state="error",
+                expanded=True
+            )
+
+            # Display error in status container
+            with self._status_container:
+                st.error(f"**{error_info['title']}**")
+                st.markdown(f"_{error_info['message']}_")
+
+                st.markdown("**해결 방법:**")
+                for solution in error_info["solution"]:
+                    st.markdown(f"  {solution}")
+
+                with st.expander("🔍 상세 에러 메시지", expanded=False):
+                    st.code(error_info["original_error"], language="text")
+
+            # Log the full error for debugging
+            logger.error(f"Agent execution error: {e}", exc_info=True)
+
+            # Yield error event
+            yield {
+                "type": "error",
+                "data": {
+                    "error_type": type(e).__name__,
+                    "error_info": error_info,
+                    "original_error": str(e),
+                }
+            }
+            return  # Stop further processing
 
         # Final render without cursor
         if self._final_response:
