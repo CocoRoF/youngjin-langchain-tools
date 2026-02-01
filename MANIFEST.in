@@ -1,0 +1,12 @@
+include README.md
+include LICENSE
+include pyproject.toml
+recursive-include youngjin_langchain_tools *.py
+recursive-exclude * __pycache__
+recursive-exclude * *.pyc
+recursive-exclude * *.pyo
+recursive-exclude * *.orig
+recursive-exclude test *
+recursive-exclude temp *
+recursive-exclude .venv *
+recursive-exclude .git *
