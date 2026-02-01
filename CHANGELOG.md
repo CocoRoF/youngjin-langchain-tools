@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-02-01
+
+### Added
+- **User-Friendly Error Handling**: 에러 발생 시 친화적인 메시지 표시
+  - API Key 오류 (OpenAI, Anthropic, Google) 자동 감지 및 해결 방법 안내
+  - Rate Limit, 크레딧 부족, 네트워크 오류 등 다양한 에러 패턴 지원
+  - 상세 에러 메시지를 접을 수 있는 expander로 표시
+  - `error` 이벤트 타입 추가 - 에러 발생 시 yield
+
+### Changed
+- `stream()` 메서드에 try-catch 에러 핸들링 추가
+- 에러 발생 시 status container가 "error" 상태로 업데이트
+
 ## [0.1.0] - 2026-02-01
 
 ### Added
