@@ -8,8 +8,8 @@ LangGraph agent responses in Streamlit applications.
 Replaces the deprecated StreamlitCallbackHandler for LangGraph-based agents.
 """
 
-from typing import Any, Dict, List, Optional, Union, Generator
-from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Generator
+from dataclasses import dataclass
 import logging
 import re
 
@@ -129,6 +129,13 @@ class StreamlitLanggraphHandlerConfig:
     expand_new_thoughts: bool = True
     """Whether to expand the status container to show tool calls."""
 
+    collapse_completed_thoughts: bool = True
+    """Whether to automatically collapse completed thought containers."""
+
+    max_thought_containers: int = 4
+    """Maximum number of thought containers to show at once.
+    When exceeded, oldest thoughts are moved to a 'History' expander."""
+
     max_tool_content_length: int = 2000
     """Maximum length of tool output to display before truncating."""
 
@@ -202,6 +209,8 @@ class StreamlitLanggraphHandler:
         container: Any,
         *,
         expand_new_thoughts: bool = True,
+        collapse_completed_thoughts: bool = True,
+        max_thought_containers: int = 4,
         max_tool_content_length: int = 2000,
         show_tool_calls: bool = True,
         show_tool_results: bool = True,
@@ -217,6 +226,11 @@ class StreamlitLanggraphHandler:
                        Usually st.container() or similar.
             expand_new_thoughts: Whether to expand status container
                                  to show tool calls. Defaults to True.
+            collapse_completed_thoughts: Whether to collapse completed
+                                         thought containers. Defaults to True.
+            max_thought_containers: Maximum number of thought containers
+                                    to show at once. Oldest are moved to
+                                    'History' expander. Defaults to 4.
             max_tool_content_length: Maximum characters of tool output
                                      to display. Defaults to 2000.
             show_tool_calls: Whether to show tool call info. Defaults to True.
@@ -230,6 +244,8 @@ class StreamlitLanggraphHandler:
         else:
             self._config = StreamlitLanggraphHandlerConfig(
                 expand_new_thoughts=expand_new_thoughts,
+                collapse_completed_thoughts=collapse_completed_thoughts,
+                max_thought_containers=max_thought_containers,
                 max_tool_content_length=max_tool_content_length,
                 show_tool_calls=show_tool_calls,
                 show_tool_results=show_tool_results,
@@ -241,6 +257,9 @@ class StreamlitLanggraphHandler:
         self._final_response: str = ""
         self._status_container: Any = None
         self._response_placeholder: Any = None
+        self._history_placeholder: Any = None  # Placeholder for history expander
+        self._thought_history: List[Dict[str, Any]] = []  # History of old thoughts
+        self._current_thoughts: List[Dict[str, Any]] = []  # Current visible thoughts
 
     @property
     def config(self) -> StreamlitLanggraphHandlerConfig:
@@ -332,9 +351,13 @@ class StreamlitLanggraphHandler:
 
         # Reset state
         self._final_response = ""
+        self._thought_history = []
+        self._current_thoughts = []
 
         # Create UI components
         with self._container:
+            # History expander placeholder (will be shown when needed)
+            self._history_placeholder = st.empty()
             self._status_container = st.status(
                 self._config.thinking_label,
                 expanded=self._config.expand_new_thoughts
@@ -405,6 +428,50 @@ class StreamlitLanggraphHandler:
 
         yield {"type": "complete", "data": {"response": self._final_response}}
 
+    def _add_thought(self, thought_type: str, data: Dict[str, Any]) -> None:
+        """Add a thought and manage history if max_thought_containers exceeded."""
+        import streamlit as st
+
+        thought = {"type": thought_type, "data": data}
+        self._current_thoughts.append(thought)
+
+        # Check if we need to move old thoughts to history
+        max_containers = self._config.max_thought_containers
+        if len(self._current_thoughts) > max_containers:
+            # Move oldest thoughts to history
+            while len(self._current_thoughts) > max_containers:
+                old_thought = self._current_thoughts.pop(0)
+                self._thought_history.append(old_thought)
+
+            # Update history expander
+            self._update_history_expander()
+
+    def _update_history_expander(self) -> None:
+        """Update the history expander with old thoughts."""
+        import streamlit as st
+
+        if not self._thought_history:
+            return
+
+        with self._history_placeholder.container():
+            with st.expander(f"📜 History ({len(self._thought_history)} items)", expanded=False):
+                for thought in self._thought_history:
+                    if thought["type"] == "tool_call":
+                        st.markdown(
+                            f"{self._config.tool_call_emoji} "
+                            f"**{thought['data']['name']}**: `{thought['data']['args']}`"
+                        )
+                    elif thought["type"] == "tool_result":
+                        st.markdown(
+                            f"{self._config.tool_complete_emoji} "
+                            f"**{thought['data']['name']}** 완료"
+                        )
+                        content = thought['data']['content']
+                        if len(content) > 200:  # Shorter preview in history
+                            st.code(content[:200] + "\n... (truncated)", language="text")
+                        else:
+                            st.code(content, language="text")
+
     def _handle_updates(
         self,
         data: Dict[str, Any]
@@ -428,6 +495,9 @@ class StreamlitLanggraphHandler:
                             tool_name = tc.get('name', 'tool')
                             tool_args = tc.get('args', {})
 
+                            # Add to thought tracking
+                            self._add_thought("tool_call", {"name": tool_name, "args": tool_args})
+
                             with self._status_container:
                                 st.write(
                                     f"{self._config.tool_call_emoji} "
@@ -445,12 +515,17 @@ class StreamlitLanggraphHandler:
                         tool_name = msg.name
                         tool_content = str(msg.content) if hasattr(msg, 'content') else ""
 
+                        # Add to thought tracking
+                        self._add_thought("tool_result", {"name": tool_name, "content": tool_content})
+
                         with self._status_container:
                             st.write(
                                 f"{self._config.tool_complete_emoji} "
                                 f"**{tool_name}** 완료"
                             )
-                            with st.expander(f"📋 {tool_name} 결과 보기", expanded=False):
+                            # Collapse based on config
+                            expanded = not self._config.collapse_completed_thoughts
+                            with st.expander(f"📋 {tool_name} 결과 보기", expanded=expanded):
                                 if len(tool_content) > self._config.max_tool_content_length:
                                     st.code(
                                         tool_content[:self._config.max_tool_content_length]
