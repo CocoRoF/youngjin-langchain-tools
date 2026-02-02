@@ -257,7 +257,7 @@ class StreamlitLanggraphHandler:
         self._final_response: str = ""
         self._status_container: Any = None
         self._response_placeholder: Any = None
-        self._history_placeholder: Any = None  # Placeholder for history expander
+        self._thoughts_placeholder: Any = None  # Placeholder for thoughts area
         self._thought_history: List[Dict[str, Any]] = []  # History of old thoughts
         self._current_thoughts: List[Dict[str, Any]] = []  # Current visible thoughts
 
@@ -356,8 +356,8 @@ class StreamlitLanggraphHandler:
 
         # Create UI components
         with self._container:
-            # History expander placeholder (will be shown when needed)
-            self._history_placeholder = st.empty()
+            # Thoughts area placeholder (manages history + current thoughts)
+            self._thoughts_placeholder = st.empty()
             self._status_container = st.status(
                 self._config.thinking_label,
                 expanded=self._config.expand_new_thoughts
@@ -430,8 +430,6 @@ class StreamlitLanggraphHandler:
 
     def _add_thought(self, thought_type: str, data: Dict[str, Any]) -> None:
         """Add a thought and manage history if max_thought_containers exceeded."""
-        import streamlit as st
-
         thought = {"type": thought_type, "data": data}
         self._current_thoughts.append(thought)
 
@@ -443,45 +441,62 @@ class StreamlitLanggraphHandler:
                 old_thought = self._current_thoughts.pop(0)
                 self._thought_history.append(old_thought)
 
-            # Update history expander
-            self._update_history_expander()
+        # Re-render the entire thoughts area
+        self._render_thoughts()
 
-    def _update_history_expander(self) -> None:
-        """Update the history expander with old thoughts."""
+    def _render_thought_item(self, thought: Dict[str, Any], in_history: bool = False) -> None:
+        """Render a single thought item."""
         import streamlit as st
 
-        if not self._thought_history:
-            return
+        if thought["type"] == "tool_call":
+            if self._config.show_tool_calls:
+                st.markdown(
+                    f"{self._config.tool_call_emoji} "
+                    f"**{thought['data']['name']}**: `{thought['data']['args']}`"
+                )
+        elif thought["type"] == "tool_result":
+            if self._config.show_tool_results:
+                tool_name = thought['data']['name']
+                content = thought['data']['content']
 
-        with self._history_placeholder.container():
-            with st.expander(f"📜 History ({len(self._thought_history)} items)", expanded=False):
-                for thought in self._thought_history:
-                    if thought["type"] == "tool_call":
-                        st.markdown(
-                            f"{self._config.tool_call_emoji} "
-                            f"**{thought['data']['name']}**: `{thought['data']['args']}`"
-                        )
-                    elif thought["type"] == "tool_result":
-                        st.markdown(
-                            f"{self._config.tool_complete_emoji} "
-                            f"**{thought['data']['name']}** 완료"
-                        )
-                        content = thought['data']['content']
-                        if len(content) > 200:  # Shorter preview in history
-                            st.code(content[:200] + "\n... (truncated)", language="text")
-                        else:
-                            st.code(content, language="text")
+                st.markdown(
+                    f"{self._config.tool_complete_emoji} "
+                    f"**{tool_name}** 완료"
+                )
+
+                if in_history:
+                    # Shorter preview in history
+                    max_len = 200
+                else:
+                    max_len = self._config.max_tool_content_length
+
+                expanded = not self._config.collapse_completed_thoughts
+                with st.expander(f"📋 {tool_name} 결과 보기", expanded=expanded if not in_history else False):
+                    if len(content) > max_len:
+                        st.code(content[:max_len] + "\n... (truncated)", language="text")
+                    else:
+                        st.code(content, language="text")
+
+    def _render_thoughts(self) -> None:
+        """Render all thoughts (history + current) in the placeholder."""
+        import streamlit as st
+
+        with self._thoughts_placeholder.container():
+            # Render history expander if there are old thoughts
+            if self._thought_history:
+                with st.expander(f"📜 History ({len(self._thought_history)} items)", expanded=False):
+                    for thought in self._thought_history:
+                        self._render_thought_item(thought, in_history=True)
+
+            # Render current thoughts
+            for thought in self._current_thoughts:
+                self._render_thought_item(thought, in_history=False)
 
     def _handle_updates(
         self,
         data: Dict[str, Any]
     ) -> Generator[Dict[str, Any], None, None]:
         """Handle 'updates' stream mode events."""
-        try:
-            import streamlit as st
-        except ImportError:
-            return
-
         for source, update in data.items():
             if not isinstance(update, dict):
                 continue
@@ -490,55 +505,42 @@ class StreamlitLanggraphHandler:
             for msg in messages:
                 # Handle tool calls
                 if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                    if self._config.show_tool_calls:
-                        for tc in msg.tool_calls:
-                            tool_name = tc.get('name', 'tool')
-                            tool_args = tc.get('args', {})
+                    for tc in msg.tool_calls:
+                        tool_name = tc.get('name', 'tool')
+                        tool_args = tc.get('args', {})
 
-                            # Add to thought tracking
-                            self._add_thought("tool_call", {"name": tool_name, "args": tool_args})
+                        # Add to thought tracking (this triggers re-render)
+                        self._add_thought("tool_call", {"name": tool_name, "args": tool_args})
 
-                            with self._status_container:
-                                st.write(
-                                    f"{self._config.tool_call_emoji} "
-                                    f"**{tool_name}**: `{tool_args}`"
-                                )
+                        # Update status label to show current action
+                        self._status_container.update(
+                            label=f"{self._config.tool_call_emoji} {tool_name}...",
+                            state="running"
+                        )
 
-                            yield {
-                                "type": "tool_call",
-                                "data": {"name": tool_name, "args": tool_args}
-                            }
+                        yield {
+                            "type": "tool_call",
+                            "data": {"name": tool_name, "args": tool_args}
+                        }
 
                 # Handle tool results
                 if source == "tools" and hasattr(msg, 'name'):
-                    if self._config.show_tool_results:
-                        tool_name = msg.name
-                        tool_content = str(msg.content) if hasattr(msg, 'content') else ""
+                    tool_name = msg.name
+                    tool_content = str(msg.content) if hasattr(msg, 'content') else ""
 
-                        # Add to thought tracking
-                        self._add_thought("tool_result", {"name": tool_name, "content": tool_content})
+                    # Add to thought tracking (this triggers re-render)
+                    self._add_thought("tool_result", {"name": tool_name, "content": tool_content})
 
-                        with self._status_container:
-                            st.write(
-                                f"{self._config.tool_complete_emoji} "
-                                f"**{tool_name}** 완료"
-                            )
-                            # Collapse based on config
-                            expanded = not self._config.collapse_completed_thoughts
-                            with st.expander(f"📋 {tool_name} 결과 보기", expanded=expanded):
-                                if len(tool_content) > self._config.max_tool_content_length:
-                                    st.code(
-                                        tool_content[:self._config.max_tool_content_length]
-                                        + "\n... (truncated)",
-                                        language="text"
-                                    )
-                                else:
-                                    st.code(tool_content, language="text")
+                    # Update status to show thinking again
+                    self._status_container.update(
+                        label=self._config.thinking_label,
+                        state="running"
+                    )
 
-                        yield {
-                            "type": "tool_result",
-                            "data": {"name": tool_name, "content": tool_content}
-                        }
+                    yield {
+                        "type": "tool_result",
+                        "data": {"name": tool_name, "content": tool_content}
+                    }
 
     def _handle_messages(
         self,
