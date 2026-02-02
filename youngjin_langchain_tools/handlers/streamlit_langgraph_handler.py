@@ -22,38 +22,33 @@ logger = logging.getLogger(__name__)
 # ============================================================
 ERROR_PATTERNS = {
     # OpenAI errors
-    r"AuthenticationError.*API key": {
-        "title": "🔑 API Key 오류",
-        "message": "API 키가 설정되지 않았거나 유효하지 않습니다.",
+    r"AuthenticationError.*API key|openai.*api.*key|OPENAI_API_KEY": {
+        "title": "🔑 OpenAI API Key 오류",
+        "message": "OpenAI API 키가 설정되지 않았거나 유효하지 않습니다.",
         "solution": [
-            "1. `.env` 파일에 `OPENAI_API_KEY=sk-...` 형태로 키를 설정하세요.",
-            "2. 또는 코드 상단에 직접 API 키를 입력하세요.",
-            "3. API 키는 https://platform.openai.com/api-keys 에서 발급받을 수 있습니다.",
+            "환경변수 `OPENAI_API_KEY`를 설정하거나 클라이언트 초기화 시 `api_key` 파라미터를 전달하세요.",
+            "API 키 발급: https://platform.openai.com/api-keys",
         ],
     },
     r"RateLimitError|rate_limit|429": {
         "title": "⏱️ Rate Limit 초과",
         "message": "API 요청 한도를 초과했습니다.",
         "solution": [
-            "1. 잠시 후 다시 시도해주세요.",
-            "2. API 사용량을 확인하세요: https://platform.openai.com/usage",
-            "3. 필요시 요금제를 업그레이드하세요.",
+            "잠시 후 다시 시도하거나, API 사용량 및 요금제를 확인하세요.",
         ],
     },
     r"InsufficientQuotaError|insufficient_quota|billing": {
         "title": "💳 크레딧 부족",
         "message": "API 크레딧이 부족합니다.",
         "solution": [
-            "1. 결제 정보를 확인하세요: https://platform.openai.com/account/billing",
-            "2. 크레딧을 충전하세요.",
+            "API 제공자의 결제 페이지에서 크레딧을 충전하세요.",
         ],
     },
     r"InvalidRequestError|invalid_request": {
         "title": "❌ 잘못된 요청",
         "message": "API 요청 형식이 올바르지 않습니다.",
         "solution": [
-            "1. 입력 데이터를 확인하세요.",
-            "2. 모델명이 올바른지 확인하세요.",
+            "입력 데이터와 모델명이 올바른지 확인하세요.",
         ],
     },
     # Anthropic errors
@@ -61,8 +56,8 @@ ERROR_PATTERNS = {
         "title": "🔑 Anthropic API Key 오류",
         "message": "Anthropic API 키가 설정되지 않았거나 유효하지 않습니다.",
         "solution": [
-            "1. `.env` 파일에 `ANTHROPIC_API_KEY=sk-ant-...` 형태로 키를 설정하세요.",
-            "2. API 키는 https://console.anthropic.com/ 에서 발급받을 수 있습니다.",
+            "환경변수 `ANTHROPIC_API_KEY`를 설정하세요.",
+            "API 키 발급: https://console.anthropic.com/",
         ],
     },
     # Google errors
@@ -70,8 +65,8 @@ ERROR_PATTERNS = {
         "title": "🔑 Google API Key 오류",
         "message": "Google API 키가 설정되지 않았거나 유효하지 않습니다.",
         "solution": [
-            "1. `.env` 파일에 `GOOGLE_API_KEY=...` 형태로 키를 설정하세요.",
-            "2. API 키는 https://aistudio.google.com/apikey 에서 발급받을 수 있습니다.",
+            "환경변수 `GOOGLE_API_KEY`를 설정하세요.",
+            "API 키 발급: https://aistudio.google.com/apikey",
         ],
     },
     # Network errors
@@ -79,18 +74,14 @@ ERROR_PATTERNS = {
         "title": "🌐 네트워크 오류",
         "message": "API 서버에 연결할 수 없습니다.",
         "solution": [
-            "1. 인터넷 연결을 확인하세요.",
-            "2. 방화벽/프록시 설정을 확인하세요.",
-            "3. API 서버 상태를 확인하세요.",
+            "인터넷 연결 및 방화벽/프록시 설정을 확인하세요.",
         ],
     },
     r"TimeoutError|timeout|timed out": {
         "title": "⏰ 시간 초과",
         "message": "API 요청이 시간 초과되었습니다.",
         "solution": [
-            "1. 네트워크 연결을 확인하세요.",
-            "2. 잠시 후 다시 시도해주세요.",
-            "3. 요청 크기를 줄여보세요.",
+            "네트워크 연결을 확인하고 잠시 후 다시 시도하세요.",
         ],
     },
     # Model errors
@@ -98,9 +89,7 @@ ERROR_PATTERNS = {
         "title": "🤖 모델 오류",
         "message": "지정된 모델을 찾을 수 없습니다.",
         "solution": [
-            "1. 모델명이 올바른지 확인하세요.",
-            "2. 해당 모델에 대한 접근 권한이 있는지 확인하세요.",
-            "3. 사용 가능한 모델 목록을 확인하세요.",
+            "모델명과 접근 권한을 확인하세요.",
         ],
     },
 }
