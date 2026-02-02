@@ -265,6 +265,7 @@ class StreamlitLanggraphHandler:
         self._container = container
         self._final_response: str = ""
         self._status_container: Any = None
+        self._thoughts_placeholder: Any = None  # Placeholder inside status for re-render
         self._response_placeholder: Any = None
         self._thought_history: List[Dict[str, Any]] = []  # History of old thoughts
         self._current_thoughts: List[Dict[str, Any]] = []  # Current visible thoughts
@@ -370,6 +371,9 @@ class StreamlitLanggraphHandler:
                 self._config.thinking_label,
                 expanded=True  # Always start expanded during processing
             )
+            # Create placeholder INSIDE status for thought re-rendering
+            with self._status_container:
+                self._thoughts_placeholder = st.empty()
             self._response_placeholder = st.empty()
 
         # Stream from agent with error handling
@@ -500,10 +504,14 @@ class StreamlitLanggraphHandler:
                     st_module.code(content, language="text")
 
     def _render_thoughts_in_status(self) -> None:
-        """Render all thoughts (history + current) inside the status container."""
+        """Render all thoughts (history + current) inside the status container.
+
+        Uses placeholder.container() to completely replace previous content.
+        """
         import streamlit as st
 
-        with self._status_container:
+        # Clear and re-render using placeholder
+        with self._thoughts_placeholder.container():
             # Render history expander if there are old thoughts
             if self._thought_history:
                 with st.expander(
