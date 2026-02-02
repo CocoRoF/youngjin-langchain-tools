@@ -124,13 +124,22 @@ def _parse_error(error: Exception) -> Dict[str, Any]:
 
 @dataclass
 class StreamlitLanggraphHandlerConfig:
-    """Configuration for StreamlitLanggraphHandler."""
+    """Configuration for StreamlitLanggraphHandler.
+
+    Attributes:
+        expand_new_thoughts: 도구 결과 expander를 펼친 상태로 표시할지 여부.
+        collapse_completed_thoughts: 완료 시 status container를 접을지 여부.
+        max_thought_containers: 표시할 최대 사고 과정 수 (초과 시 History로 이동).
+        max_tool_content_length: 도구 결과 최대 표시 문자 수.
+        show_tool_calls: 도구 호출 정보 표시 여부.
+        show_tool_results: 도구 실행 결과 표시 여부.
+    """
 
     expand_new_thoughts: bool = True
-    """Whether to expand the status container to show tool calls."""
+    """Whether to show tool result expanders in expanded state."""
 
     collapse_completed_thoughts: bool = True
-    """Whether to automatically collapse completed thought containers."""
+    """Whether to collapse the status container when agent completes."""
 
     max_thought_containers: int = 4
     """Maximum number of thought containers to show at once.
@@ -257,9 +266,9 @@ class StreamlitLanggraphHandler:
         self._final_response: str = ""
         self._status_container: Any = None
         self._response_placeholder: Any = None
-        self._thoughts_placeholder: Any = None  # Placeholder for thoughts area
         self._thought_history: List[Dict[str, Any]] = []  # History of old thoughts
         self._current_thoughts: List[Dict[str, Any]] = []  # Current visible thoughts
+        self._thought_counter: int = 0  # Unique ID counter for thoughts
 
     @property
     def config(self) -> StreamlitLanggraphHandlerConfig:
@@ -353,24 +362,23 @@ class StreamlitLanggraphHandler:
         self._final_response = ""
         self._thought_history = []
         self._current_thoughts = []
+        self._thought_counter = 0
 
         # Create UI components
         with self._container:
-            # Thoughts area placeholder (manages history + current thoughts)
-            self._thoughts_placeholder = st.empty()
             self._status_container = st.status(
                 self._config.thinking_label,
-                expanded=self._config.expand_new_thoughts
+                expanded=True  # Always start expanded during processing
             )
             self._response_placeholder = st.empty()
 
         # Stream from agent with error handling
-        config = config or {}
+        agent_config = config or {}
 
         try:
             for stream_mode, data in agent.stream(
                 input,
-                config=config,
+                config=agent_config,
                 stream_mode=["messages", "updates"]
             ):
                 if stream_mode == "updates":
@@ -378,11 +386,11 @@ class StreamlitLanggraphHandler:
                 elif stream_mode == "messages":
                     yield from self._handle_messages(data)
 
-            # Mark as complete
+            # Mark as complete - collapse based on config
             self._status_container.update(
                 label=self._config.complete_label,
                 state="complete",
-                expanded=False
+                expanded=not self._config.collapse_completed_thoughts
             )
 
         except Exception as e:
@@ -430,67 +438,84 @@ class StreamlitLanggraphHandler:
 
     def _add_thought(self, thought_type: str, data: Dict[str, Any]) -> None:
         """Add a thought and manage history if max_thought_containers exceeded."""
-        thought = {"type": thought_type, "data": data}
+        self._thought_counter += 1
+        thought = {
+            "id": self._thought_counter,
+            "type": thought_type,
+            "data": data
+        }
         self._current_thoughts.append(thought)
 
         # Check if we need to move old thoughts to history
         max_containers = self._config.max_thought_containers
-        if len(self._current_thoughts) > max_containers:
-            # Move oldest thoughts to history
-            while len(self._current_thoughts) > max_containers:
-                old_thought = self._current_thoughts.pop(0)
-                self._thought_history.append(old_thought)
+        while len(self._current_thoughts) > max_containers:
+            old_thought = self._current_thoughts.pop(0)
+            self._thought_history.append(old_thought)
 
-        # Re-render the entire thoughts area
-        self._render_thoughts()
+    def _render_thought_item(
+        self,
+        thought: Dict[str, Any],
+        st_module: Any,
+        in_history: bool = False
+    ) -> None:
+        """Render a single thought item.
 
-    def _render_thought_item(self, thought: Dict[str, Any], in_history: bool = False) -> None:
-        """Render a single thought item."""
-        import streamlit as st
+        Args:
+            thought: The thought dict with id, type, data.
+            st_module: The streamlit module reference.
+            in_history: Whether this thought is in history section.
+        """
+        thought_type = thought["type"]
+        thought_data = thought["data"]
 
-        if thought["type"] == "tool_call":
-            if self._config.show_tool_calls:
-                st.markdown(
-                    f"{self._config.tool_call_emoji} "
-                    f"**{thought['data']['name']}**: `{thought['data']['args']}`"
-                )
-        elif thought["type"] == "tool_result":
-            if self._config.show_tool_results:
-                tool_name = thought['data']['name']
-                content = thought['data']['content']
+        if thought_type == "tool_call":
+            # Tool call display: 🔧 tool_name: {args}
+            st_module.markdown(
+                f"{self._config.tool_call_emoji} "
+                f"**{thought_data['name']}**: `{thought_data['args']}`"
+            )
 
-                st.markdown(
-                    f"{self._config.tool_complete_emoji} "
-                    f"**{tool_name}** 완료"
-                )
+        elif thought_type == "tool_result":
+            # Tool result display: ✅ tool_name 완료 + expander
+            tool_name = thought_data['name']
+            content = thought_data['content']
 
-                if in_history:
-                    # Shorter preview in history
-                    max_len = 200
+            st_module.markdown(
+                f"{self._config.tool_complete_emoji} "
+                f"**{tool_name}** 완료"
+            )
+
+            # Determine max length and expand state
+            if in_history:
+                max_len = 200
+                should_expand = False  # History items always collapsed
+            else:
+                max_len = self._config.max_tool_content_length
+                should_expand = self._config.expand_new_thoughts
+
+            with st_module.expander(f"📋 {tool_name} 결과 보기", expanded=should_expand):
+                if len(content) > max_len:
+                    st_module.code(content[:max_len] + "\n... (truncated)", language="text")
                 else:
-                    max_len = self._config.max_tool_content_length
+                    st_module.code(content, language="text")
 
-                expanded = not self._config.collapse_completed_thoughts
-                with st.expander(f"📋 {tool_name} 결과 보기", expanded=expanded if not in_history else False):
-                    if len(content) > max_len:
-                        st.code(content[:max_len] + "\n... (truncated)", language="text")
-                    else:
-                        st.code(content, language="text")
-
-    def _render_thoughts(self) -> None:
-        """Render all thoughts (history + current) in the placeholder."""
+    def _render_thoughts_in_status(self) -> None:
+        """Render all thoughts (history + current) inside the status container."""
         import streamlit as st
 
-        with self._thoughts_placeholder.container():
+        with self._status_container:
             # Render history expander if there are old thoughts
             if self._thought_history:
-                with st.expander(f"📜 History ({len(self._thought_history)} items)", expanded=False):
+                with st.expander(
+                    f"📜 History ({len(self._thought_history)} items)",
+                    expanded=False
+                ):
                     for thought in self._thought_history:
-                        self._render_thought_item(thought, in_history=True)
+                        self._render_thought_item(thought, st, in_history=True)
 
             # Render current thoughts
             for thought in self._current_thoughts:
-                self._render_thought_item(thought, in_history=False)
+                self._render_thought_item(thought, st, in_history=False)
 
     def _handle_updates(
         self,
@@ -509,8 +534,13 @@ class StreamlitLanggraphHandler:
                         tool_name = tc.get('name', 'tool')
                         tool_args = tc.get('args', {})
 
-                        # Add to thought tracking (this triggers re-render)
-                        self._add_thought("tool_call", {"name": tool_name, "args": tool_args})
+                        # Only add to thoughts if show_tool_calls is True
+                        if self._config.show_tool_calls:
+                            self._add_thought(
+                                "tool_call",
+                                {"name": tool_name, "args": tool_args}
+                            )
+                            self._render_thoughts_in_status()
 
                         # Update status label to show current action
                         self._status_container.update(
@@ -528,8 +558,13 @@ class StreamlitLanggraphHandler:
                     tool_name = msg.name
                     tool_content = str(msg.content) if hasattr(msg, 'content') else ""
 
-                    # Add to thought tracking (this triggers re-render)
-                    self._add_thought("tool_result", {"name": tool_name, "content": tool_content})
+                    # Only add to thoughts if show_tool_results is True
+                    if self._config.show_tool_results:
+                        self._add_thought(
+                            "tool_result",
+                            {"name": tool_name, "content": tool_content}
+                        )
+                        self._render_thoughts_in_status()
 
                     # Update status to show thinking again
                     self._status_container.update(
