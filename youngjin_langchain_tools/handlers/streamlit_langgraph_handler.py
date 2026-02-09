@@ -6,12 +6,15 @@ This module provides a handler class that simplifies streaming
 LangGraph agent responses in Streamlit applications.
 
 Replaces the deprecated StreamlitCallbackHandler for LangGraph-based agents.
+
+Supports LangSmith integration for feedback collection via run_id tracking.
 """
 
 from typing import Any, Dict, List, Optional, Generator
 from dataclasses import dataclass
 import logging
 import re
+import uuid
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -169,6 +172,15 @@ class StreamlitLanggraphHandlerConfig:
     cursor: str = "▌"
     """Cursor character shown during streaming."""
 
+    enable_langsmith: bool = True
+    """Whether to enable LangSmith integration for run_id tracking."""
+
+    langsmith_project: Optional[str] = None
+    """LangSmith project name. Uses LANGCHAIN_PROJECT env var if not set."""
+
+    langsmith_run_name: str = "streamlit_agent_run"
+    """Name for the LangSmith run trace."""
+
 
 class StreamlitLanggraphHandler:
     """
@@ -225,6 +237,9 @@ class StreamlitLanggraphHandler:
         show_tool_results: bool = True,
         thinking_label: str = "🤔 Thinking...",
         complete_label: str = "✅ Complete!",
+        enable_langsmith: bool = True,
+        langsmith_project: Optional[str] = None,
+        langsmith_run_name: str = "streamlit_agent_run",
         config: Optional[StreamlitLanggraphHandlerConfig] = None,
     ):
         """
@@ -246,6 +261,12 @@ class StreamlitLanggraphHandler:
             show_tool_results: Whether to show tool results. Defaults to True.
             thinking_label: Label while processing. Defaults to "🤔 Thinking...".
             complete_label: Label when complete. Defaults to "✅ Complete!".
+            enable_langsmith: Whether to enable LangSmith run_id tracking
+                              for feedback collection. Defaults to True.
+            langsmith_project: Optional LangSmith project name. Uses
+                               LANGCHAIN_PROJECT env var if not set.
+            langsmith_run_name: Name for the LangSmith run trace.
+                                Defaults to "streamlit_agent_run".
             config: Optional config object. If provided, overrides other params.
         """
         if config is not None:
@@ -260,6 +281,9 @@ class StreamlitLanggraphHandler:
                 show_tool_results=show_tool_results,
                 thinking_label=thinking_label,
                 complete_label=complete_label,
+                enable_langsmith=enable_langsmith,
+                langsmith_project=langsmith_project,
+                langsmith_run_name=langsmith_run_name,
             )
 
         self._container = container
@@ -270,11 +294,41 @@ class StreamlitLanggraphHandler:
         self._thought_history: List[Dict[str, Any]] = []  # History of old thoughts
         self._current_thoughts: List[Dict[str, Any]] = []  # Current visible thoughts
         self._thought_counter: int = 0  # Unique ID counter for thoughts
+        self._run_id: Optional[str] = None  # LangSmith run ID for feedback
 
     @property
     def config(self) -> StreamlitLanggraphHandlerConfig:
         """Get the handler configuration."""
         return self._config
+
+    @property
+    def run_id(self) -> Optional[str]:
+        """
+        Get the LangSmith run ID for this agent execution.
+
+        This ID can be used with LangSmith's feedback API to collect
+        user feedback on the agent's response.
+
+        Returns:
+            The LangSmith run ID as a string, or None if LangSmith
+            integration is disabled or no run has been executed yet.
+
+        Example:
+            ```python
+            handler = StreamlitLanggraphHandler(st.container())
+            response = handler.invoke(agent, input, config)
+
+            # Use run_id for feedback
+            if handler.run_id:
+                langsmith_client.create_feedback(
+                    handler.run_id,
+                    "thumbs",
+                    score=1,
+                    comment="Great response!"
+                )
+            ```
+        """
+        return self._run_id
 
     def get_response(self) -> str:
         """
@@ -332,6 +386,10 @@ class StreamlitLanggraphHandler:
         This method provides more control than invoke(), yielding
         each streaming event for custom processing.
 
+        When LangSmith integration is enabled (default), a unique run_id
+        is generated and can be accessed via the `run_id` property after
+        streaming completes. This run_id can be used for LangSmith feedback.
+
         Args:
             agent: The LangGraph agent (CompiledGraph) to invoke.
             input: Input dictionary, typically {"messages": [...]}.
@@ -348,6 +406,10 @@ class StreamlitLanggraphHandler:
                 if event["type"] == "token":
                     # Custom token handling
                     pass
+
+            # After streaming, use run_id for feedback
+            if handler.run_id:
+                langsmith_client.create_feedback(handler.run_id, "thumbs", score=1)
             ```
         """
         # Import streamlit here to avoid import errors when not using streamlit
@@ -364,6 +426,12 @@ class StreamlitLanggraphHandler:
         self._thought_history = []
         self._current_thoughts = []
         self._thought_counter = 0
+        self._run_id = None  # Reset run_id for new stream
+
+        # Generate run_id for LangSmith if enabled
+        if self._config.enable_langsmith:
+            self._run_id = str(uuid.uuid4())
+            logger.debug(f"Generated LangSmith run_id: {self._run_id}")
 
         # Create UI components
         with self._container:
@@ -376,8 +444,68 @@ class StreamlitLanggraphHandler:
                 self._thoughts_placeholder = st.empty()
             self._response_placeholder = st.empty()
 
-        # Stream from agent with error handling
+        # Stream from agent with error handling and optional LangSmith tracing
         agent_config = config or {}
+
+        # Execute with LangSmith trace wrapper if enabled
+        if self._config.enable_langsmith and self._run_id:
+            yield from self._stream_with_langsmith(agent, input, agent_config)
+        else:
+            yield from self._stream_internal(agent, input, agent_config)
+
+    def _stream_with_langsmith(
+        self,
+        agent: Any,
+        input: Dict[str, Any],
+        agent_config: Dict[str, Any],
+    ) -> Generator[Dict[str, Any], None, None]:
+        """Stream agent execution with LangSmith tracing wrapper."""
+        try:
+            from langsmith import trace
+        except ImportError:
+            logger.warning(
+                "langsmith not installed. Install it with: pip install langsmith. "
+                "Falling back to streaming without LangSmith tracing."
+            )
+            yield from self._stream_internal(agent, input, agent_config)
+            return
+
+        # Use LangSmith trace context with explicit run_id
+        trace_kwargs = {
+            "run_id": self._run_id,
+            "name": self._config.langsmith_run_name,
+            "run_type": "chain",
+            "inputs": input,
+        }
+
+        # Add project if specified
+        if self._config.langsmith_project:
+            trace_kwargs["project_name"] = self._config.langsmith_project
+
+        try:
+            with trace(**trace_kwargs) as run:
+                # Update run_id from the actual run object if available
+                if hasattr(run, 'id') and run.id:
+                    self._run_id = str(run.id)
+                    logger.debug(f"LangSmith trace started with run_id: {self._run_id}")
+
+                yield from self._stream_internal(agent, input, agent_config)
+
+                # Update trace with outputs
+                if self._final_response:
+                    run.end(outputs={"response": self._final_response})
+        except Exception as e:
+            logger.warning(f"LangSmith tracing error: {e}. Continuing without trace.")
+            yield from self._stream_internal(agent, input, agent_config)
+
+    def _stream_internal(
+        self,
+        agent: Any,
+        input: Dict[str, Any],
+        agent_config: Dict[str, Any],
+    ) -> Generator[Dict[str, Any], None, None]:
+        """Internal stream implementation without LangSmith wrapper."""
+        import streamlit as st
 
         try:
             for stream_mode, data in agent.stream(
