@@ -585,6 +585,52 @@ class StreamlitLanggraphHandler:
                         "data": {"name": tool_name, "content": tool_content}
                     }
 
+    def _extract_text_content(self, content: Any) -> str:
+        """Extract text content from various LLM provider content formats.
+
+        Handles different content formats from multiple LLM providers:
+        - OpenAI: Plain string (e.g., "Hello")
+        - Anthropic: List of content blocks (e.g., [{"type": "text", "text": "Hello"}])
+        - Google Gemini: List of parts (e.g., [{"text": "Hello"}] or Part objects)
+
+        Args:
+            content: The content to extract text from. Can be:
+                - str: OpenAI-style, returned as-is
+                - list[dict]: Anthropic/Google-style content blocks
+                - list[object]: Content block objects with text attribute
+
+        Returns:
+            The extracted text content as a string.
+        """
+        if content is None:
+            return ""
+
+        if isinstance(content, str):
+            # OpenAI-style: plain string
+            return content
+
+        if isinstance(content, list):
+            # Anthropic/Google-style: list of content blocks or parts
+            text_parts = []
+            for block in content:
+                if isinstance(block, dict):
+                    # Anthropic format: {"type": "text", "text": "..."}
+                    if block.get("type") == "text" and "text" in block:
+                        text_parts.append(block["text"])
+                    # Google Gemini format: {"text": "..."} (no type field)
+                    elif "text" in block:
+                        text_parts.append(block["text"])
+                elif isinstance(block, str):
+                    # List of plain strings
+                    text_parts.append(block)
+                elif hasattr(block, "text"):
+                    # Content block objects with text attribute (e.g., Google Part objects)
+                    text_parts.append(block.text)
+            return "".join(text_parts)
+
+        # Fallback: try to convert to string
+        return str(content)
+
     def _handle_messages(
         self,
         data: tuple
@@ -602,12 +648,16 @@ class StreamlitLanggraphHandler:
             if hasattr(chunk, 'tool_call_chunks') and chunk.tool_call_chunks:
                 return
 
-            self._final_response += chunk.content
-            self._response_placeholder.markdown(
-                self._final_response + self._config.cursor
-            )
+            # Extract text content (handles both OpenAI string and Anthropic list formats)
+            text_content = self._extract_text_content(chunk.content)
 
-            yield {
-                "type": "token",
-                "data": {"content": chunk.content, "accumulated": self._final_response}
-            }
+            if text_content:
+                self._final_response += text_content
+                self._response_placeholder.markdown(
+                    self._final_response + self._config.cursor
+                )
+
+                yield {
+                    "type": "token",
+                    "data": {"content": text_content, "accumulated": self._final_response}
+                }
