@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "youngjin-langchain-tools"
-version = "0.3.3"
+version = "0.3.4"
 description = "LangGraph utilities for Streamlit - StreamlitLanggraphHandler and more"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -39,8 +39,8 @@ classifiers = [
 ]
 dependencies = [
     "pydantic>=2.0.0",
-    "langchain>=1.0.0,<1.2.7",
-    "langchain-core>=1.0.0,<1.2.7",
+    "langchain>=1.0.0,<1.2.17",
+    "langchain-core>=1.0.0,<1.2.17",
 ]
 
 [project.optional-dependencies]
